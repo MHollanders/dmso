@@ -7,7 +7,7 @@ editor_options:
 # Setup
 
 ```{r}
-# Working directory and packages used
+# Packages used
 library(tidyverse)
 library(nimble)
 library(MCMCvis)
@@ -88,6 +88,8 @@ a1code <- nimbleCode({
   # Residual
   sigma ~ dexp(1)
   
+  # LIKELIHOOD
+  
   for(i in 1:n.obs){
     
     # Start and end inhibition
@@ -104,13 +106,12 @@ a1code <- nimbleCode({
     
     # Cedergreen–Ritz–Streibig model
     mu[i] <- c[i] + (d[i] - c[i] + w[i] * f[i] * exp(-1 / x[i] ^ alpha)) / (1 + (x[i] / e[i]) ^ b[i])
-
-    # Likelihood
     y[i] ~ dnorm(mu[i], sd = sigma)
     
   } # i
   
   # DERIVED QUANTITIES
+  
   e.diff <- e.alpha[2] - e.alpha[1]
   
 })
@@ -267,6 +268,8 @@ i1code <- nimbleCode({
   # Residual
   sigma ~ dexp(0.1)
   
+  # LIKELIHOOD
+  
   for(i in 1:n.obs){
     
     # Start and end inhibition
@@ -283,12 +286,12 @@ i1code <- nimbleCode({
     
     # Cedergreen–Ritz–Streibig model
     mu[i] <- c[i] - (c[i] - d[i] + w[i] * f[i] * exp(-1 / x[i] ^ alpha)) / (1 + (x[i] / e[i]) ^ b[i])
-
-    # Likelihood
     y[i] ~ dnorm(mu[i], sd = sigma)
     
   } # i
   
+  # DERIVED QUANTITIES
+
   e.diff <- e.alpha[2] - e.alpha[1]
   
 })
@@ -459,6 +462,8 @@ a2code <- nimbleCode({
   # Residual
   sigma ~ dexp(1)
   
+  # LIKELIHOOD
+  
   for(i in 1:n.obs){
     
     # Start and end inhibition
@@ -475,8 +480,6 @@ a2code <- nimbleCode({
     
     # Cedergreen–Ritz–Streibig model
     mu[i] <- c[i] + (d[i] - c[i] + w[i] * f[i] * exp(-1 / x[i] ^ alpha)) / (1 + (x[i] / e[i]) ^ b[i])
-
-    # Likelihood
     y[i] ~ dnorm(mu[i], sd = sigma)
     
   } # i
@@ -676,6 +679,8 @@ i2code <- nimbleCode({
   # Residual
   sigma ~ dexp(0.1)
   
+  # LIKELIHOOD
+  
   for(i in 1:n.obs){
     
     # Start and end inhibition
@@ -692,8 +697,6 @@ i2code <- nimbleCode({
     
     # Cedergreen–Ritz–Streibig model
     mu[i] <- c[i] - (c[i] - d[i] + w[i] * f[i] * exp(-1 / x[i] ^ alpha)) / (1 + (x[i] / e[i]) ^ b[i])
-
-    # Likelihood
     y[i] ~ dnorm(mu[i], sd = sigma)
     
   } # i
