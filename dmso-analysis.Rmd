@@ -37,12 +37,14 @@ xa <- 10 ^ seq(log10(0.0225), log10(24), length.out = n.pred)    # Antibiotic
 
 ```{r}
 # Data prep
-data1 <- data |>
+data1 <- 
+  data |>
   filter(Type == "Variable",
          Concentration == 0) |>
   mutate(Trial = sort(c(rep(1:14, 10))))
 # Exclude outliers for model
-data1.i <- data1 |>
+data1.i <- 
+  data1 |>
   filter(Inhibition > -100)
 ```
 
@@ -56,7 +58,7 @@ a1code <- nimbleCode({
   # PRIORS
   
   # Intercepts (species-specific)
-  for(i in 1:n.species){
+  for (i in 1:n.species) {
       
     # Start and end absorbance
     c.alpha[i] <- 0
@@ -73,13 +75,13 @@ a1code <- nimbleCode({
   } # i
   
   # Non-centered parameterization for multivariate random trial effects
-  for(j in 1:4){
+  for (j in 1:4) {
     sigma.trial[j] ~ dexp(1)
   }
   chol[1:4,1:4] ~ dlkj_corr_cholesky(1.5, 4)
   cor[1:4,1:4] <- t(chol[1:4,1:4]) %*% chol[1:4,1:4]  # Correlation matrix
-  for(i in 1:n.trial){
-    for(j in 1:4){
+  for (i in 1:n.trial) {
+    for (j in 1:4) {
       z[j,i] ~ dnorm(0, 1)
     } # j
     eps.trial[1:4,i] <- diag(sigma.trial[1:4]) %*% t(chol[1:4,1:4]) %*% z[1:4,i]
@@ -90,7 +92,7 @@ a1code <- nimbleCode({
   
   # LIKELIHOOD
   
-  for(i in 1:n.obs){
+  for (i in 1:n.obs) {
     
     # Start and end inhibition
     c[i] <- c.alpha[species[i]]
@@ -161,8 +163,8 @@ a1draws <- do.call(rbind, a1samples)
 
 # Predictions
 a1pred <- array(NA, c(n.pred, nrow(a1draws), n.species))
-for(i in 1:n.pred){
-  for(k in 1:n.species){
+for (i in 1:n.pred) {
+  for (k in 1:n.species) {
       
       a1pred[i,,k] <- a1draws[,paste0("c.alpha[", k, "]")] + (a1draws[,paste0("d.alpha[", k, "]")] - a1draws[,paste0("c.alpha[", k, "]")] + a1draws[,paste0("f.alpha[", k, "]")] * exp(-1 / xd[i] ^ alpha)) / (1 + (xd[i] / a1draws[,paste0("e.alpha[", k, "]")]) ^ a1draws[,paste0("b.alpha[", k, "]")])
       
@@ -236,7 +238,7 @@ i1code <- nimbleCode({
   # PRIORS
   
   # Intercepts (species-specific)
-  for(i in 1:n.species){
+  for (i in 1:n.species) {
     
     # Start and end inhibition
     c.alpha[i] <- 100
@@ -253,13 +255,13 @@ i1code <- nimbleCode({
   } # i
   
   # Non-centered parameterization for multivariate random trial effects
-  for(j in 1:4){
+  for (j in 1:4) {
     sigma.trial[j] ~ dexp(0.1)
   }
   chol[1:4,1:4] ~ dlkj_corr_cholesky(1.5, 4)
   cor[1:4,1:4] <- t(chol[1:4,1:4]) %*% chol[1:4,1:4]  # Correlation matrix
-  for(i in 1:n.trial){
-    for(j in 1:4){
+  for (i in 1:n.trial) {
+    for (j in 1:4) {
       z[j,i] ~ dnorm(0, 1)
     } # j
     eps.trial[1:4,i] <- diag(sigma.trial[1:4]) %*% t(chol[1:4,1:4]) %*% z[1:4,i]
@@ -270,7 +272,7 @@ i1code <- nimbleCode({
   
   # LIKELIHOOD
   
-  for(i in 1:n.obs){
+  for (i in 1:n.obs) {
     
     # Start and end inhibition
     c[i] <- c.alpha[species[i]]
@@ -341,8 +343,8 @@ i1draws <- do.call(rbind, i1samples)
 
 # Predictions
 i1pred <- array(NA, c(n.pred, nrow(i1draws), n.species))
-for(i in 1:n.pred){
-  for(k in 1:n.species){
+for (i in 1:n.pred) {
+  for (k in 1:n.species) {
       
       i1pred[i,,k] <- i1draws[,paste0("c.alpha[", k, "]")] - (i1draws[,paste0("c.alpha[", k, "]")] - i1draws[,paste0("d.alpha[", k, "]")] + i1draws[,paste0("f.alpha[", k, "]")] * exp(-1 / xd[i] ^ alpha)) / (1 + (xd[i] / i1draws[,paste0("e.alpha[", k, "]")]) ^ i1draws[,paste0("b.alpha[", k, "]")])
       
@@ -428,8 +430,8 @@ a2code <- nimbleCode({
   # PRIORS
   
   # Intercepts (species- and DMSO-specific)
-  for(i in 1:n.species){
-    for(j in 1:n.dmso){
+  for (i in 1:n.species) {
+    for (j in 1:n.dmso) {
       
       # Start and end absorbance
       c.alpha[i,j] <- 0
@@ -447,13 +449,13 @@ a2code <- nimbleCode({
   } # i
   
   # Non-centered parameterization for multivariate random trial effects
-  for(j in 1:4){
+  for (j in 1:4) {
     sigma.trial[j] ~ dexp(1)
   }
   chol[1:4,1:4] ~ dlkj_corr_cholesky(1.5, 4)
   cor[1:4,1:4] <- t(chol[1:4,1:4]) %*% chol[1:4,1:4]  # Correlation matrix
-  for(i in 1:n.trial){
-    for(j in 1:4){
+  for (i in 1:n.trial) {
+    for (j in 1:4) {
       z[j,i] ~ dnorm(0, 1)
     } # j
     eps.trial[1:4,i] <- diag(sigma.trial[1:4]) %*% t(chol[1:4,1:4]) %*% z[1:4,i]
@@ -464,7 +466,7 @@ a2code <- nimbleCode({
   
   # LIKELIHOOD
   
-  for(i in 1:n.obs){
+  for (i in 1:n.obs) {
     
     # Start and end inhibition
     c[i] <- c.alpha[species[i],dmso[i]]
@@ -486,7 +488,7 @@ a2code <- nimbleCode({
   
   # DERIVED QUANTITIES
 
-  for(i in 1:n.species){
+  for (i in 1:n.species) {
     
     # Differences in d
     d.diff[i,1] <- d.alpha[i,1] - d.alpha[i,2]
@@ -555,9 +557,9 @@ a2draws <- do.call(rbind, a2samples)
 
 # Predictions
 a2pred <- array(NA, c(n.pred, nrow(a2draws), n.species, n.dmso))
-for(i in 1:n.pred){
-  for(k in 1:n.species){
-    for(m in 1:n.dmso){
+for (i in 1:n.pred) {
+  for (k in 1:n.species) {
+    for (m in 1:n.dmso) {
       
       a2pred[i,,k,m] <- a2draws[,paste0("c.alpha[", k, ", ", m, "]")] + (a2draws[,paste0("d.alpha[", k, ", ", m, "]")] - a2draws[,paste0("c.alpha[", k, ", ", m, "]")] + a2draws[,paste0("f.alpha[", k, ", ", m, "]")] * exp(-1 / xa[i] ^ alpha)) / (1 + (xa[i] / a2draws[,paste0("e.alpha[", k, ", ", m, "]")]) ^ a2draws[,paste0("b.alpha[", k, ", ", m, "]")])
       
@@ -645,8 +647,8 @@ i2code <- nimbleCode({
   # PRIORS
   
   # Intercepts (species- and DMSO-specific)
-  for(i in 1:n.species){
-    for(j in 1:n.dmso){
+  for (i in 1:n.species) {
+    for (j in 1:n.dmso) {
       
       # Start and end inhibition
       c.alpha[i,j] <- 100
@@ -664,13 +666,13 @@ i2code <- nimbleCode({
   } # i
   
   # Non-centered parameterization for multivariate random trial effects
-  for(j in 1:4){
+  for (j in 1:4) {
     sigma.trial[j] ~ dexp(0.1)
   }
   chol[1:4,1:4] ~ dlkj_corr_cholesky(1.5, 4)
   cor[1:4,1:4] <- t(chol[1:4,1:4]) %*% chol[1:4,1:4]
-  for(i in 1:n.trial){
-    for(j in 1:4){
+  for (i in 1:n.trial) {
+    for (j in 1:4) {
       z[j,i] ~ dnorm(0, 1)
     } # j
     eps.trial[1:4,i] <- diag(sigma.trial[1:4]) %*% t(chol[1:4,1:4]) %*% z[1:4,i]
@@ -681,7 +683,7 @@ i2code <- nimbleCode({
   
   # LIKELIHOOD
   
-  for(i in 1:n.obs){
+  for (i in 1:n.obs) {
     
     # Start and end inhibition
     c[i] <- c.alpha[species[i],dmso[i]]
@@ -703,7 +705,7 @@ i2code <- nimbleCode({
   
   # DERIVED QUANTITIES
 
-  for(i in 1:n.species){
+  for (i in 1:n.species) {
     
     # Difference in d
     d.diff[i,1] <- d.alpha[i,1] - d.alpha[i,2]
@@ -744,7 +746,6 @@ str(i2consts <- list(n.obs = nrow(data2),
 i2inits <- list(d.alpha = array(0, c(n.species, n.dmso)),
                 sigma.trial = rep(0.1, 4))
 
-
 # Parameters to monitor
 i2mons <- c("b.alpha", "c.alpha", "d.alpha", "e.alpha", "f.alpha", "w.alpha", 
             "sigma.trial", "cor", "sigma",
@@ -773,9 +774,9 @@ i2draws <- do.call(rbind, i2samples)
 
 # Predictions
 i2pred <- array(NA, c(n.pred, nrow(i2draws), n.species, n.dmso))
-for(i in 1:n.pred){
-  for(k in 1:n.species){
-    for(m in 1:n.dmso){
+for (i in 1:n.pred) {
+  for (k in 1:n.species) {
+    for (m in 1:n.dmso) {
       
       i2pred[i,,k,m] <- i2draws[,paste0("c.alpha[", k, ", ", m, "]")] - (i2draws[,paste0("c.alpha[", k, ", ", m, "]")] - i2draws[,paste0("d.alpha[", k, ", ", m, "]")] + i2draws[,paste0("f.alpha[", k, ", ", m, "]")] * exp(-1 / xa[i] ^ alpha)) / (1 + (xa[i] / i2draws[,paste0("e.alpha[", k, ", ", m, "]")]) ^ i2draws[,paste0("b.alpha[", k, ", ", m, "]")])
       
