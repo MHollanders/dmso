@@ -1,0 +1,890 @@
+---
+title: "Analysis of DMSO data"
+format: pdf
+execute:
+  eval: false
+editor_options: 
+  chunk_output_type: console
+---
+
+# Setup
+
+```{r}
+# Packages used
+library(tidyverse)
+library(nimble)
+library(MCMCvis)
+library(ggdist)
+library(patchwork)
+
+# Data
+data <- 
+  read_csv("dmso.csv") |>
+  mutate(Species = factor(Species, levels = c("S. pneumoniae", "P. aeruginosa")),
+         Antibiotic = factor(Antibiotic, levels = c("Ampicillin", "Getamycin")))
+
+# Metadata
+n.species <- 2
+n.dmso <- 4
+alpha <- 0.5  # Scale parameter for hormesis
+
+# Prediction ranges for plots
+n.pred <- 200
+xd <- 10 ^ seq(log10(0.0375), log10(37.5), length.out = n.pred)  # DMSO
+xa <- 10 ^ seq(log10(0.0225), log10(24), length.out = n.pred)    # Antibiotic
+```
+
+# Models
+
+## Experiment 1: DMSO only
+
+```{r}
+# Data prep
+#data1 <- 
+  data |>
+  filter(Type == "Variable",
+         Concentration == 0) |>
+  mutate(Trial = sort(c(rep(1:14, 10))))
+# Exclude outliers for model
+data1.i <- 
+  data1 |>
+  filter(Inhibition > -100)
+```
+
+### Absorbance
+
+#### Model
+
+```{r}
+a1code <- nimbleCode({
+  
+  # PRIORS
+  
+  # Intercepts (species-specific)
+  for (i in 1:n.species) {
+      
+    # Start and end absorbance
+    c.alpha[i] <- 0
+    d.alpha[i] ~ dnorm(1, 1)
+    
+    # Hormesis
+    w.alpha[i] ~ dbern(0.5)
+    f.alpha[i] ~ dexp(1)
+    
+    # e and slope
+    e.alpha[i] ~ dunif(0, max.x)
+    b.alpha[i] ~ dexp(0.1)
+
+  } # i
+  
+  # Non-centered parameterization for multivariate random trial effects
+  for (j in 1:4) {
+    sigma.trial[j] ~ dexp(1)
+  }
+  chol[1:4,1:4] ~ dlkj_corr_cholesky(1.5, 4)
+  cor[1:4,1:4] <- t(chol[1:4,1:4]) %*% chol[1:4,1:4]  # Correlation matrix
+  for (i in 1:n.trial) {
+    for (j in 1:4) {
+      z[j,i] ~ dnorm(0, 1)
+    } # j
+    eps.trial[1:4,i] <- diag(sigma.trial[1:4]) %*% t(chol[1:4,1:4]) %*% z[1:4,i]
+  } # i
+  
+  # Residual
+  sigma ~ dexp(1)
+  
+  # LIKELIHOOD
+  
+  for (i in 1:n.obs) {
+    
+    # Start and end inhibition
+    c[i] <- c.alpha[species[i]]
+    d[i] <- d.alpha[species[i]] + eps.trial[1,trial[i]]
+    
+    # Hormesis and RJMCMC inclusion
+    f[i] <- f.alpha[species[i]] + eps.trial[2,trial[i]]
+    w[i] <- w.alpha[species[i]]
+    
+    # e and slope
+    e[i] <- e.alpha[species[i]] + eps.trial[3,trial[i]]
+    b[i] <- b.alpha[species[i]] + eps.trial[4,trial[i]]
+    
+    # Cedergreen–Ritz–Streibig model
+    mu[i] <- c[i] + (d[i] - c[i] + w[i] * f[i] * exp(-1 / x[i] ^ alpha)) / (1 + (x[i] / e[i]) ^ b[i])
+    y[i] ~ dnorm(mu[i], sd = sigma)
+    
+  } # i
+  
+  # DERIVED QUANTITIES
+  
+  e.diff <- e.alpha[2] - e.alpha[1]
+  
+})
+
+# Data
+str(a1data <- list(y = data1$Absorbance))
+
+# Constant
+str(a1consts <- list(n.obs = nrow(data1),
+                     n.species = n.species,
+                     n.trial = max(data1$Trial),
+                     x = data1$DMSO,
+                     max.x = max(data1$DMSO),
+                     species = as.numeric(data1$Species),
+                     trial = data1$Trial,
+                     alpha = alpha))
+
+# Initial values
+a1inits <- list(d.alpha = rep(1, n.species),
+                sigma.trial = rep(0.1, 4))
+
+# Parameters to monitor
+a1mons <- c("b.alpha", "c.alpha", "d.alpha", "e.alpha", "f.alpha", "w.alpha",
+            "sigma.trial", "cor", "sigma",
+            "e.diff")
+
+# Model
+Ca1model <- compileNimble(nimbleModel(a1code, a1consts, a1data, a1inits))
+a1conf <- configureMCMC(Ca1model, monitors = a1mons)
+configureRJ(a1conf, "f.alpha", "w.alpha")
+Ca1mcmc <- compileNimble(buildMCMC(a1conf), project = Ca1model)
+
+# Run
+a1samples <- runMCMC(Ca1mcmc, niter = 60000, nburnin = 10000, thin = 10, nchains = 2)
+
+# Summary and traceplots
+print(a1sum <- MCMCsummary(a1samples, round = 3))
+write.csv(a1sum, "a1sum.csv")
+#MCMCtrace(adSamples, pdf = F, Rhat = T, n.eff = T, ind = T)
+```
+
+#### Plot
+
+```{r}
+# Setup
+a1draws <- do.call(rbind, a1samples)
+
+# Predictions
+a1pred <- array(NA, c(n.pred, nrow(a1draws), n.species))
+for (i in 1:n.pred) {
+  for (k in 1:n.species) {
+      
+      a1pred[i,,k] <- a1draws[,paste0("c.alpha[", k, "]")] + (a1draws[,paste0("d.alpha[", k, "]")] - a1draws[,paste0("c.alpha[", k, "]")] + a1draws[,paste0("f.alpha[", k, "]")] * exp(-1 / xd[i] ^ alpha)) / (1 + (xd[i] / a1draws[,paste0("e.alpha[", k, "]")]) ^ a1draws[,paste0("b.alpha[", k, "]")])
+      
+  } # k
+} # i
+
+# Plot 1a
+a1plot1 <- 
+  tibble(pred = c(a1pred[,,1]),
+         dmso = rep(xd, nrow(a1draws))) |>
+  ggplot(aes(x = dmso)) +
+  geom_jitter(aes(x = DMSO, y = Absorbance),
+              data = data1 |> filter(Species == "S. pneumoniae"),
+              color = "#333333",
+              shape = 16,
+              size = 3/4,
+              width = 1/50,
+              alpha = 3/4) +
+  stat_lineribbon(aes(y = pred),
+                  .width = 0.95,
+                  point_interval = median_qi,
+                  color = "#333333",
+                  fill = "#333333",
+                  size = 3/4,
+                  alpha = 1/3,
+                  show.legend = F) +
+  scale_x_log10(expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(0, 0.5, 0.5),
+                     expand = c(0, 0)) +
+  coord_cartesian(ylim = c(-0.1, 0.6)) +
+  labs(subtitle = expression(italic("S. pneumoniae")),
+       x = "DMSO (%)",
+       y = "Absorbance (OD 595)")
+
+# Plot 1b
+a1plot2 <- 
+  tibble(pred = c(a1pred[,,2]),
+         dmso = rep(xd, nrow(a1draws))) |>
+  ggplot(aes(x = dmso)) +
+  geom_jitter(aes(x = DMSO, y = Absorbance),
+              data = data1 |> filter(Species == "P. aeruginosa", Concentration == 0),
+              shape = 16,
+              size = 3/4,
+              width = 1/50,
+              alpha = 2/3) +
+  stat_lineribbon(aes(y = pred),
+                  .width = 0.95,
+                  point_interval = median_qi,
+                  color = "#333333",
+                  fill = "#333333",
+                  size = 3/4,
+                  alpha = 1/3,
+                  show.legend = F) +
+  scale_x_log10(expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(0, 1.5, 0.5),
+                     expand = c(0, 0)) +
+  coord_cartesian(ylim = c(-0.1, 1.6)) +
+  labs(subtitle = expression(italic("P. aeruginosa")),
+       x = "DMSO (%)",
+       y = "Absorbance (OD 595)")
+```
+
+### Inhibition
+
+#### Model
+
+```{r}
+# Code
+i1code <- nimbleCode({
+  
+  # PRIORS
+  
+  # Intercepts (species-specific)
+  for (i in 1:n.species) {
+    
+    # Start and end inhibition
+    c.alpha[i] <- 100
+    d.alpha[i] ~ dnorm(0, 100)
+    
+    # Hormesis and RJMCMC inclusion
+    f.alpha[i] ~ dexp(0.01)
+    w.alpha[i] ~ dbern(0.5)
+    
+    # ED50 and slope
+    e.alpha[i] ~ dunif(0, max.x)
+    b.alpha[i] ~ dexp(0.1)
+    
+  } # i
+  
+  # Non-centered parameterization for multivariate random trial effects
+  for (j in 1:4) {
+    sigma.trial[j] ~ dexp(0.1)
+  }
+  chol[1:4,1:4] ~ dlkj_corr_cholesky(1.5, 4)
+  cor[1:4,1:4] <- t(chol[1:4,1:4]) %*% chol[1:4,1:4]  # Correlation matrix
+  for (i in 1:n.trial) {
+    for (j in 1:4) {
+      z[j,i] ~ dnorm(0, 1)
+    } # j
+    eps.trial[1:4,i] <- diag(sigma.trial[1:4]) %*% t(chol[1:4,1:4]) %*% z[1:4,i]
+  } # i
+  
+  # Residual
+  sigma ~ dexp(0.1)
+  
+  # LIKELIHOOD
+  
+  for (i in 1:n.obs) {
+    
+    # Start and end inhibition
+    c[i] <- c.alpha[species[i]]
+    d[i] <- d.alpha[species[i]] + eps.trial[1,trial[i]]
+    
+    # Hormesis and RJMCMC inclusion
+    f[i] <- f.alpha[species[i]] + eps.trial[2,trial[i]]
+    w[i] <- w.alpha[species[i]]
+    
+    # ED50 and slope
+    e[i] <- e.alpha[species[i]] + eps.trial[3,trial[i]]
+    b[i] <- b.alpha[species[i]] + eps.trial[4,trial[i]]
+    
+    # Cedergreen–Ritz–Streibig model
+    mu[i] <- c[i] - (c[i] - d[i] + w[i] * f[i] * exp(-1 / x[i] ^ alpha)) / (1 + (x[i] / e[i]) ^ b[i])
+    y[i] ~ dnorm(mu[i], sd = sigma)
+    
+  } # i
+  
+  # DERIVED QUANTITIES
+
+  e.diff <- e.alpha[2] - e.alpha[1]
+  
+})
+
+# Data
+str(i1data <- list(y = data1.i$Inhibition))
+
+# Constants
+str(i1consts <- list(n.obs = nrow(data1.i),
+                     n.species = n.species,
+                     x = data1.i$DMSO,
+                     max.x = max(data1.i$DMSO),
+                     species = as.numeric(data1.i$Species),
+                     trial = data1.i$Trial,
+                     n.trial = length(unique(data1.i$Trial)),
+                     alpha = alpha))
+
+# Initial values
+i1inits <- list(d.alpha = rep(0, n.species),
+                sigma.trial = rep(0.1, 4))
+
+# Parameters to monitor
+i1mons <- c("b.alpha", "c.alpha", "d.alpha", "e.alpha", "f.alpha", "w.alpha", 
+            "sigma.trial", "cor", "sigma",
+            "e.diff")
+
+# Model
+Ci1model <- compileNimble(nimbleModel(i1code, i1consts, i1data, i1inits))
+i1conf <- configureMCMC(Ci1model, monitors = i1mons)
+configureRJ(i1conf, "f.alpha", "w.alpha")
+Ci1mcmc <- compileNimble(buildMCMC(i1conf), project = Ci1model)
+
+# Run
+i1samples <- runMCMC(Ci1mcmc, niter = 60000, nburnin = 10000, thin = 10, nchains = 2)
+
+# Summary and traceplots
+print(i1sum <- MCMCsummary(i1samples, round = 3))
+write.csv(i1sum, "i1sum.csv")
+#MCMCtrace(i1samples, pdf = F, Rhat = T, n.eff = T, ind = T, iter = 10000)
+```
+
+#### Plot
+
+```{r}
+# Setup
+i1draws <- do.call(rbind, i1samples)
+
+# Predictions
+i1pred <- array(NA, c(n.pred, nrow(i1draws), n.species))
+for (i in 1:n.pred) {
+  for (k in 1:n.species) {
+      
+      i1pred[i,,k] <- i1draws[,paste0("c.alpha[", k, "]")] - (i1draws[,paste0("c.alpha[", k, "]")] - i1draws[,paste0("d.alpha[", k, "]")] + i1draws[,paste0("f.alpha[", k, "]")] * exp(-1 / xd[i] ^ alpha)) / (1 + (xd[i] / i1draws[,paste0("e.alpha[", k, "]")]) ^ i1draws[,paste0("b.alpha[", k, "]")])
+      
+  } # k
+} # i
+
+# Plot 1a
+i1plot1 <- 
+  tibble(pred = c(i1pred[,,1]),
+         dmso = rep(xd, nrow(i1draws))) |>
+  ggplot(aes(x = dmso)) +
+  geom_jitter(aes(x = DMSO, y = Inhibition),
+              data = data1 |> filter(Species == "S. pneumoniae"),
+              color = "#333333",
+              shape = 16,
+              size = 3/4,
+              width = 1/50,
+              alpha = 3/4) +
+  stat_lineribbon(aes(y = pred),
+                  .width = 0.95,
+                  point_interval = median_qi,
+                  color = "#333333",
+                  fill = "#333333",
+                  size = 3/4,
+                  alpha = 1/3,
+                  show.legend = F) +
+  scale_x_log10(expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(0, 100, 50),
+                     expand = c(0, 0)) +
+  coord_cartesian(ylim = c(-15, 115)) +
+  labs(subtitle = expression(italic("S. pneumoniae")),
+       x = "DMSO (%)",
+       y = "Biofilm inhibition (%)")
+
+# Plot 1b
+i1plot2 <- 
+  tibble(pred = c(i1pred[,,2]),
+         dmso = rep(xd, nrow(i1draws))) |>
+  ggplot(aes(x = dmso)) +
+  geom_jitter(aes(x = DMSO, y = Inhibition, color = Inhibition < -100),
+              data = data1 |> filter(Species == "P. aeruginosa"),
+              shape = 16,
+              size = 3/4,
+              width = 1/50,
+              alpha = 3/4,
+              show.legend = F) +
+  stat_lineribbon(aes(y = pred),
+                  .width = 0.95,
+                  point_interval = median_qi,
+                  color = "#333333",
+                  fill = "#333333",
+                  size = 3/4,
+                  alpha = 1/3,
+                  show.legend = F) +
+  scale_color_manual(values = c("#333333", "red")) +
+  scale_x_log10(expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(-300, 100, 50),
+                     expand = c(0, 0)) +
+  coord_cartesian(ylim = c(-315, 115)) +
+  labs(subtitle = expression(italic("P. aeruginosa")),
+       x = "DMSO (%)",
+       y = "Biofilm inhibition (%)")
+```
+
+## Experiment 2: Anbiotioc with DMSO
+
+```{r}
+# Data prep
+data2 <- data |>
+  filter(Concentration > 0) |>
+  mutate(DMSO2 = factor(ifelse(DMSO == 0 | DMSO == 1 | DMSO == 2, DMSO, "Variable")),
+         Trial = sort(c(rep(1:35, 10), rep(36:39, 9), rep(40:56, 10))))
+```
+
+### Absorbance
+
+#### Model
+
+```{r}
+# Code
+a2code <- nimbleCode({
+  
+  # PRIORS
+  
+  # Intercepts (species- and DMSO-specific)
+  for (i in 1:n.species) {
+    for (j in 1:n.dmso) {
+      
+      # Start and end absorbance
+      c.alpha[i,j] <- 0
+      d.alpha[i,j] ~ dnorm(1, 1)
+      
+      # Hormesis and RJMCMC inclusion
+      w.alpha[i,j] ~ dbern(0.5)
+      f.alpha[i,j] ~ dexp(1)
+      
+      # e and slope
+      e.alpha[i,j] ~ dunif(0, max.x)
+      b.alpha[i,j] ~ dexp(0.1)
+      
+    } # j
+  } # i
+  
+  # Non-centered parameterization for multivariate random trial effects
+  for (j in 1:4) {
+    sigma.trial[j] ~ dexp(1)
+  }
+  chol[1:4,1:4] ~ dlkj_corr_cholesky(1.5, 4)
+  cor[1:4,1:4] <- t(chol[1:4,1:4]) %*% chol[1:4,1:4]  # Correlation matrix
+  for (i in 1:n.trial) {
+    for (j in 1:4) {
+      z[j,i] ~ dnorm(0, 1)
+    } # j
+    eps.trial[1:4,i] <- diag(sigma.trial[1:4]) %*% t(chol[1:4,1:4]) %*% z[1:4,i]
+  } # i
+  
+  # Residual
+  sigma ~ dexp(1)
+  
+  # LIKELIHOOD
+  
+  for (i in 1:n.obs) {
+    
+    # Start and end inhibition
+    c[i] <- c.alpha[species[i],dmso[i]]
+    d[i] <- d.alpha[species[i],dmso[i]] + eps.trial[1,trial[i]]
+    
+    # Hormesis and RJMCMC inclusion
+    f[i] <- f.alpha[species[i],dmso[i]] + eps.trial[2,trial[i]]
+    w[i] <- w.alpha[species[i],dmso[i]]
+    
+    # ED50 and slope
+    e[i] <- e.alpha[species[i],dmso[i]] + eps.trial[3,trial[i]]
+    b[i] <- b.alpha[species[i],dmso[i]] + eps.trial[4,trial[i]]
+    
+    # Cedergreen–Ritz–Streibig model
+    mu[i] <- c[i] + (d[i] - c[i] + w[i] * f[i] * exp(-1 / x[i] ^ alpha)) / (1 + (x[i] / e[i]) ^ b[i])
+    y[i] ~ dnorm(mu[i], sd = sigma)
+    
+  } # i
+  
+  # DERIVED QUANTITIES
+
+  for (i in 1:n.species) {
+    
+    # Differences in d
+    d.diff[i,1] <- d.alpha[i,1] - d.alpha[i,2]
+    d.diff[i,2] <- d.alpha[i,1] - d.alpha[i,3]
+    d.diff[i,3] <- d.alpha[i,1] - d.alpha[i,4]
+    d.diff[i,4] <- d.alpha[i,2] - d.alpha[i,3]
+    d.diff[i,5] <- d.alpha[i,2] - d.alpha[i,4]
+    d.diff[i,6] <- d.alpha[i,3] - d.alpha[i,4]
+    
+    # Differences in e
+    e.diff[i,1] <- e.alpha[i,1] - e.alpha[i,2]
+    e.diff[i,2] <- e.alpha[i,1] - e.alpha[i,3]
+    e.diff[i,3] <- e.alpha[i,1] - e.alpha[i,4]
+    e.diff[i,4] <- e.alpha[i,2] - e.alpha[i,3]
+    e.diff[i,5] <- e.alpha[i,2] - e.alpha[i,4]
+    e.diff[i,6] <- e.alpha[i,3] - e.alpha[i,4]
+    
+  } # i
+  
+})
+
+# Data
+str(a2data <- list(y = data2$Absorbance))
+
+# Constants
+str(a2consts <- list(n.obs = nrow(data2),
+                     n.species = n.species,
+                     n.dmso = n.dmso,
+                     n.trial = max(data2$Trial),
+                     x = data2$Concentration,
+                     max.x = max(data2$Concentration),
+                     species = as.numeric(data2$Species),
+                     dmso = as.numeric(data2$DMSO2),
+                     trial = data2$Trial,
+                     alpha = alpha))
+
+# Parameters to monitor
+a2mons <- c("b.alpha", "c.alpha", "d.alpha", "e.alpha", "f.alpha", "w.alpha", 
+            "sigma.trial", "cor", "sigma",
+            "d.diff", "e.diff")
+
+# Initial values
+a2inits <- list(d.alpha = array(1, c(n.species, n.dmso)),
+                sigma.trial = rep(0.1, 4))
+
+# Model
+Ca2model <- compileNimble(nimbleModel(a2code, a2consts, a2data, a2inits))
+a2conf <- configureMCMC(Ca2model, monitors = a2mons)
+configureRJ(a2conf, "f.alpha", "w.alpha")
+Ca2mcmc <- compileNimble(buildMCMC(a2conf), project = Ca2model)
+
+# Run
+a2samples <- runMCMC(Ca2mcmc, niter = 60000, nburnin = 10000, thin = 10, nchains = 2)
+
+# Summary and traceplots
+print(a2sum <- MCMCsummary(a2samples, round = 3))
+write.csv(a2sum, "a2sum.csv")
+#MCMCtrace(a2samples, pdf = F, Rhat = T, n.eff = T, ind = T, excl = c("d.diff", "e.diff", "w.alpha"))
+```
+
+#### Plot
+
+```{r}
+# Setup
+a2draws <- do.call(rbind, a2samples)
+
+# Predictions
+a2pred <- array(NA, c(n.pred, nrow(a2draws), n.species, n.dmso))
+for (i in 1:n.pred) {
+  for (k in 1:n.species) {
+    for (m in 1:n.dmso) {
+      
+      a2pred[i,,k,m] <- a2draws[,paste0("c.alpha[", k, ", ", m, "]")] + (a2draws[,paste0("d.alpha[", k, ", ", m, "]")] - a2draws[,paste0("c.alpha[", k, ", ", m, "]")] + a2draws[,paste0("f.alpha[", k, ", ", m, "]")] * exp(-1 / xa[i] ^ alpha)) / (1 + (xa[i] / a2draws[,paste0("e.alpha[", k, ", ", m, "]")]) ^ a2draws[,paste0("b.alpha[", k, ", ", m, "]")])
+      
+    } # m
+  } # k
+} # i
+
+# Plot 1a
+a2labels1 <- c(expression(0^"A"), expression(1^"A"), expression(2^"A"), expression("Variable"^"A"))
+a2plot1 <- 
+  tibble(pred = c(a2pred[,,1,]),
+         conc = rep(rep(xa, nrow(a2draws)), n.dmso),
+         dmso = factor(sort(rep(c(0:2, "Variable"), dim(a2pred)[1] * dim(a2pred)[2])))) |>
+  ggplot(aes(x = conc)) +
+  geom_jitter(aes(x = Concentration, y = Absorbance, color = DMSO2),
+              data = data2 |> filter(Species == "S. pneumoniae"),
+              shape = 16,
+              size = 3/4,
+              width = 1/50,
+              alpha = 2/3) +
+  stat_lineribbon(aes(y = pred, color = dmso, fill = dmso),
+                  point_interval = median_qi,
+                  .width = 0.95,
+                  size = 3/4,
+                  alpha = 1/3) +
+  scale_color_manual(values = c("black", "#FFA500", "#005AFF", "#FF005A"),
+                     labels = a2labels1) +
+  scale_fill_manual(values = c("black", "#FFA500", "#005AFF", "#FF005A"),
+                    labels = a2labels1) +
+  scale_x_log10(expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(0, 0.5, 0.5),
+                     expand = c(0, 0)) +
+  coord_cartesian(ylim = c(-0.1, 0.6)) +
+  theme(legend.position = c(1, 1),
+        legend.justification = c("right", "top")) +
+  labs(subtitle = expression(italic("S. pneumoniae")),
+       x = bquote(paste("Ampicillin (", mu,"g/mL)")),
+       y = "Absorbance (OD 595)",
+       color = "DMSO (%)",
+       fill = "DMSO (%)")
+
+# Plot 1b
+a2labels2 <- c(expression(0^"A"), expression(1^"AB"), expression(2^"B"), expression("Variable"^"C"))
+a2plot2 <- 
+  tibble(pred = c(a2pred[,,2,]),
+         conc = rep(rep(xa, nrow(a2draws)), n.dmso),
+         dmso = factor(sort(rep(c(0:2, "Variable"), dim(a2pred)[1] * dim(a2pred)[2])))) |>
+  ggplot(aes(x = conc)) +
+  geom_jitter(aes(x = Concentration, y = Absorbance, color = DMSO2),
+              data = data2 |> filter(Species == "P. aeruginosa"),
+              shape = 16,
+              size = 3/4,
+              width = 1/50,
+              alpha = 2/3) +
+  stat_lineribbon(aes(y = pred, color = dmso, fill = dmso),
+                  point_interval = median_qi,
+                  .width = 0.95,
+                  size = 3/4,
+                  alpha = 1/3) +
+  scale_color_manual(values = c("black", "#FFA500", "#005AFF", "#FF005A"),
+                     labels = a2labels2) +
+  scale_fill_manual(values = c("black", "#FFA500", "#005AFF", "#FF005A"),
+                    labels = a2labels2) +
+  scale_x_log10(expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(0, 1.5, 0.5),
+                     expand = c(0, 0)) +
+  coord_cartesian(ylim = c(-0.1, 1.6)) +
+  theme(legend.position = c(1, 1),
+        legend.justification = c("right", "top")) +
+  labs(subtitle = expression(italic("P. aeruginosa")),
+       x = bquote(paste("Gentamicin (", mu,"g/mL)")),
+       y = "Absorbance (OD 595)",
+       color = "DMSO (%)",
+       fill = "DMSO (%)")
+```
+
+### Inhibition
+
+#### Model
+
+```{r}
+# Code
+i2code <- nimbleCode({
+  
+  # PRIORS
+  
+  # Intercepts (species- and DMSO-specific)
+  for (i in 1:n.species) {
+    for (j in 1:n.dmso) {
+      
+      # Start and end inhibition
+      c.alpha[i,j] <- 100
+      d.alpha[i,j] ~ dnorm(0, 100)
+      
+      # Hormesis and RJMCMC inclusion
+      f.alpha[i,j] ~ dexp(0.01)
+      w.alpha[i,j] ~ dbern(0.5)
+      
+      # e and slope
+      e.alpha[i,j] ~ dunif(0, max.x)
+      b.alpha[i,j] ~ dexp(0.1)
+
+    } # j
+  } # i
+  
+  # Non-centered parameterization for multivariate random trial effects
+  for (j in 1:4) {
+    sigma.trial[j] ~ dexp(0.1)
+  }
+  chol[1:4,1:4] ~ dlkj_corr_cholesky(1.5, 4)
+  cor[1:4,1:4] <- t(chol[1:4,1:4]) %*% chol[1:4,1:4]
+  for (i in 1:n.trial) {
+    for (j in 1:4) {
+      z[j,i] ~ dnorm(0, 1)
+    } # j
+    eps.trial[1:4,i] <- diag(sigma.trial[1:4]) %*% t(chol[1:4,1:4]) %*% z[1:4,i]
+  } # i
+  
+  # Residual
+  sigma ~ dexp(0.1)
+  
+  # LIKELIHOOD
+  
+  for (i in 1:n.obs) {
+    
+    # Start and end inhibition
+    c[i] <- c.alpha[species[i],dmso[i]]
+    d[i] <- d.alpha[species[i],dmso[i]] + eps.trial[1,trial[i]]
+    
+    # Hormesis and RJMCMC inclusion
+    f[i] <- f.alpha[species[i],dmso[i]] + eps.trial[2,trial[i]]
+    w[i] <- w.alpha[species[i],dmso[i]]
+    
+    # e and slope
+    e[i] <- e.alpha[species[i],dmso[i]] + eps.trial[3,trial[i]]
+    b[i] <- b.alpha[species[i],dmso[i]] + eps.trial[4,trial[i]]
+    
+    # Cedergreen–Ritz–Streibig model
+    mu[i] <- c[i] - (c[i] - d[i] + w[i] * f[i] * exp(-1 / x[i] ^ alpha)) / (1 + (x[i] / e[i]) ^ b[i])
+    y[i] ~ dnorm(mu[i], sd = sigma)
+    
+  } # i
+  
+  # DERIVED QUANTITIES
+
+  for (i in 1:n.species) {
+    
+    # Difference in d
+    d.diff[i,1] <- d.alpha[i,1] - d.alpha[i,2]
+    d.diff[i,2] <- d.alpha[i,1] - d.alpha[i,3]
+    d.diff[i,3] <- d.alpha[i,1] - d.alpha[i,4]
+    d.diff[i,4] <- d.alpha[i,2] - d.alpha[i,3]
+    d.diff[i,5] <- d.alpha[i,2] - d.alpha[i,4]
+    d.diff[i,6] <- d.alpha[i,3] - d.alpha[i,4]
+    
+    # Differences in e
+    e.diff[i,1] <- e.alpha[i,1] - e.alpha[i,2]
+    e.diff[i,2] <- e.alpha[i,1] - e.alpha[i,3]
+    e.diff[i,3] <- e.alpha[i,1] - e.alpha[i,4]
+    e.diff[i,4] <- e.alpha[i,2] - e.alpha[i,3]
+    e.diff[i,5] <- e.alpha[i,2] - e.alpha[i,4]
+    e.diff[i,6] <- e.alpha[i,3] - e.alpha[i,4]
+    
+  } # i
+
+})
+
+# Data
+str(i2data <- list(y = data2$Inhibition))
+
+# Constants
+str(i2consts <- list(n.obs = nrow(data2),
+                     n.species = n.species,
+                     n.dmso = n.dmso,
+                     n.trial = max(data2$Trial),
+                     x = data2$Concentration,
+                     max.x = max(data2$Concentration),
+                     species = as.numeric(data2$Species),
+                     dmso = as.numeric(data2$DMSO2),
+                     trial = data2$Trial,
+                     alpha = alpha))
+
+# Initial values
+i2inits <- list(d.alpha = array(0, c(n.species, n.dmso)),
+                sigma.trial = rep(0.1, 4))
+
+# Parameters to monitor
+i2mons <- c("b.alpha", "c.alpha", "d.alpha", "e.alpha", "f.alpha", "w.alpha", 
+            "sigma.trial", "cor", "sigma",
+            "d.diff", "e.diff")
+
+# Model
+Ci2model <- compileNimble(nimbleModel(i2code, i2consts, i2data, i2inits))
+i2conf <- configureMCMC(Ci2model, monitors = i2mons)
+configureRJ(i2conf, "f.alpha", "w.alpha")
+Ci2mcmc <- compileNimble(buildMCMC(i2conf), project = Ci2model)
+
+# Run
+i2samples <- runMCMC(Ci2mcmc, niter = 60000, nburnin = 10000, thin = 10, nchains = 2)
+
+# Summary and traceplots
+print(i2sum <- MCMCsummary(i2samples, round = 3))
+write.csv(i2sum, "i2sum.csv")
+#MCMCtrace(i2samples, pdf = F, Rhat = T, n.eff = T, ind = T, excl = "w.alpha")
+```
+
+#### Plot
+
+```{r}
+# Setup
+i2draws <- do.call(rbind, i2samples)
+
+# Predictions
+i2pred <- array(NA, c(n.pred, nrow(i2draws), n.species, n.dmso))
+for (i in 1:n.pred) {
+  for (k in 1:n.species) {
+    for (m in 1:n.dmso) {
+      
+      i2pred[i,,k,m] <- i2draws[,paste0("c.alpha[", k, ", ", m, "]")] - (i2draws[,paste0("c.alpha[", k, ", ", m, "]")] - i2draws[,paste0("d.alpha[", k, ", ", m, "]")] + i2draws[,paste0("f.alpha[", k, ", ", m, "]")] * exp(-1 / xa[i] ^ alpha)) / (1 + (xa[i] / i2draws[,paste0("e.alpha[", k, ", ", m, "]")]) ^ i2draws[,paste0("b.alpha[", k, ", ", m, "]")])
+      
+    } # m
+  } # k
+} # i
+
+# Plot 1a
+i2labels1 <- c(expression(0^"A"), expression(1^"A"), expression(2^"A"), expression("Variable"^"A"))
+i2plot1 <- 
+  tibble(pred = c(i2pred[,,1,]),
+         conc = rep(rep(xa, nrow(i2draws)), n.dmso),
+         dmso = factor(sort(rep(c(0:2, "Variable"), dim(i2pred)[1] * dim(i2pred)[2])))) |>
+  ggplot(aes(x = conc)) +
+  geom_jitter(aes(x = Concentration, y = Inhibition, color = DMSO2),
+              data = data2 |> filter(Species == "S. pneumoniae"),
+              shape = 16,
+              size = 3/4,
+              width = 1/50,
+              alpha = 2/3) +
+  stat_lineribbon(aes(y = pred, color = dmso, fill = dmso),
+                  .width = 0.95,
+                  point_interval = median_qi,
+                  size = 3/4,
+                  alpha = 1/3) +
+  scale_color_manual(values = c("black", "#FFA500", "#005AFF", "#FF005A"),
+                     labels = i2labels1) +
+  scale_fill_manual(values = c("black", "#FFA500", "#005AFF", "#FF005A"),
+                    labels = i2labels1) +
+  scale_x_log10(expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(0, 100, 50),
+                     expand = c(0, 0)) +
+  coord_cartesian(ylim = c(-15, 115)) +
+  theme(legend.position = c(1, 0.05),
+        legend.justification = c("right", "bottom")) +
+  labs(subtitle = expression(italic("S. pneumoniae")),
+       x = bquote(paste("Ampicillin (", mu,"g/mL)")), 
+       y = "Biofilm inhibition (%)",
+       color = "DMSO (%)",
+       fill = "DMSO (%)")
+
+# Plot 1b
+i2labels2 <- c(expression(0^"A"), expression(1^"A"), expression(2^"A"), expression("Variable"^"B"))
+i2plot2 <- 
+  tibble(pred = c(i2pred[,,2,]),
+         conc = rep(rep(xa, nrow(i2draws)), n.dmso),
+         dmso = factor(sort(rep(c(0:2, "Variable"), dim(i2pred)[1] * dim(i2pred)[2])))) |>
+  ggplot(aes(x = conc)) +
+  geom_jitter(aes(x = Concentration, y = Inhibition, color = DMSO2),
+              data = data2 |> filter(Species == "P. aeruginosa"),
+              shape = 16,
+              size = 3/4,
+              width = 1/50,
+              alpha = 2/3) +
+  stat_lineribbon(aes(y = pred, color = dmso, fill = dmso),
+                  .width = 0.95,
+                  point_interval = median_qi,
+                  size = 3/4,
+                  alpha = 1/3) +
+  scale_color_manual(values = c("black", "#FFA500", "#005AFF", "#FF005A"),
+                    labels = i2labels2) +
+  scale_fill_manual(values = c("black", "#FFA500", "#005AFF", "#FF005A"),
+                    labels = i2labels2) +
+  scale_x_log10(expand = c(0, 0)) +
+  scale_y_continuous(breaks = seq(-200, 100, 50),
+                     expand = c(0, 0)) +
+  coord_cartesian(ylim = c(-215, 115)) +
+  theme(legend.position = c(1, 0.05),
+        legend.justification = c("right", "bottom")) +
+  labs(subtitle = expression(italic("P. aeruginosa")),
+       x = bquote(paste("Gentamicin (", mu,"g/mL)")), 
+       y = "Biofilm inhibition (%)",
+       color = "DMSO (%)",
+       fill = "DMSO (%)")
+```
+
+# Plots
+
+```{r}
+# Set theme
+theme_set(theme_classic(base_size = 8, 
+                        base_family = "Helvetica"))
+theme_update(axis.ticks = element_line(color = "#333333"),
+             axis.line = element_line(color = "#333333"),
+             axis.title = element_text(color = "#333333"),
+             axis.text = element_text(color = "#333333"),
+             legend.title = element_text(color = "#333333"),
+             legend.text = element_text(color = "#333333"),
+             legend.position = "none",
+             legend.key.size = unit(0.1, "inch"),
+             legend.text.align = 0,
+             strip.text = element_text(size = rel(1)),
+             strip.background = element_rect(color = NA))
+
+# Experiment 1
+plot1 <- 
+  (a1plot1 | a1plot2) / (i1plot1 | i1plot2) +
+  plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(face = "bold", color = "#333333"))
+ggsave("plot1.jpg", plot1, width = 5, height = 5, units = "in", dpi = 600)
+
+# Experiment 2
+plot2 <- 
+  (a2plot1 | a2plot2) / (i2plot1 | i2plot2) +
+  plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(face = "bold", color = "#333333"))
+ggsave("plot2.jpg", plot2, width = 5, height = 5, units = "in", dpi = 600)
+```
